@@ -19,11 +19,12 @@ MLB_STAT_CHOICES = [
     app_commands.Choice(name="ERA", value="era"),
 ]
 
+LEADER_HITTING_STATS = {"Home Runs": "batting_hr", "RBIs": "batting_rbi", "Batting Average": "batting_avg", "Hits": "batting_h", "Stolen Bases": "batting_sb"}
+LEADER_PITCHING_STATS = {"Wins": "pitching_w", "ERA": "pitching_era", "Saves": "pitching_sv", "Strikeouts": "pitching_k"}
+
 class MLBCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._leaderboard_cache = {}
-        self._LEADERBOARD_CACHE_TTL = 21600 # 6 hours
 
     async def player_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
         if not current: return []
@@ -77,119 +78,69 @@ class MLBCog(commands.Cog):
     @app_commands.autocomplete(player=player_autocomplete)
     async def mlbseasonstats(self, interaction: discord.Interaction, player: str):
         await interaction.response.defer(ephemeral=True)
-        player_id = int(player)
-        season = get_current_mlb_season()
+        player_id, season = int(player), get_current_mlb_season()
 
-        game_logs = await self.bot.api_client.get_mlb_player_stats_for_season(player_id, season)
-        if not game_logs:
-            raise StatsNotFoundException(f"Could not find stats for this player in the {season} season.")
+        stats_data = await self.bot.api_client.get_mlb_season_stats(player_id, season)
+        if not stats_data or not stats_data.get("data"):
+            raise StatsNotFoundException(f"Could not find season stats for this player in the {season} season.")
 
-        stats, is_pitcher = self._calculate_mlb_season_stats(game_logs)
-        player_info = game_logs[0]['player']
+        stats = stats_data["data"][0]
+        player_info = stats["player"]
         player_name = player_info['full_name']
         position = player_info.get('position', 'N/A')
 
         embed = discord.Embed(title=f"{player_name} ({position}) - {season} Season Stats", color=discord.Color.dark_green())
+
+        is_pitcher = (stats.get('pitching_gp') or 0) > (stats.get('batting_gp') or 0)
+
         if is_pitcher:
-            embed.add_field(name="W-L", value=f"{stats['wins']}-{stats['losses']}", inline=True)
-            embed.add_field(name="ERA", value=f"{stats['era']:.2f}", inline=True)
-            embed.add_field(name="SO", value=stats['p_k'], inline=True)
-            embed.add_field(name="IP", value=f"{stats['ip']:.1f}", inline=True)
-            embed.add_field(name="Saves", value=stats['sv'], inline=True)
+            embed.add_field(name="W-L", value=f"{stats.get('pitching_w', 0)}-{stats.get('pitching_l', 0)}", inline=True)
+            embed.add_field(name="ERA", value=f"{stats.get('pitching_era', 0):.2f}", inline=True)
+            embed.add_field(name="SO", value=stats.get('pitching_k', 0), inline=True)
+            embed.add_field(name="IP", value=f"{stats.get('pitching_ip', 0):.1f}", inline=True)
+            embed.add_field(name="Saves", value=stats.get('pitching_sv', 0), inline=True)
         else:
-            embed.add_field(name="AVG", value=f"{stats['avg']:.3f}", inline=True)
-            embed.add_field(name="HR", value=stats['hr'], inline=True)
-            embed.add_field(name="RBI", value=stats['rbi'], inline=True)
-            embed.add_field(name="Runs", value=stats['runs'], inline=True)
-            embed.add_field(name="Hits", value=stats['hits'], inline=True)
-            embed.add_field(name="SB", value=stats['sb'], inline=True)
+            embed.add_field(name="AVG", value=f"{stats.get('batting_avg', 0):.3f}", inline=True)
+            embed.add_field(name="HR", value=stats.get('batting_hr', 0), inline=True)
+            embed.add_field(name="RBI", value=stats.get('batting_rbi', 0), inline=True)
+            embed.add_field(name="Runs", value=stats.get('batting_r', 0), inline=True)
+            embed.add_field(name="Hits", value=stats.get('batting_h', 0), inline=True)
+            embed.add_field(name="SB", value=stats.get('batting_sb', 0), inline=True)
 
         await interaction.followup.send(embed=embed, ephemeral=True)
-
-    def _calculate_mlb_season_stats(self, game_logs: List[Dict[str, Any]]) -> (Dict[str, Any], bool):
-        # Improved heuristic to determine if a player is primarily a pitcher or hitter
-        games_pitched = sum(1 for g in game_logs if g.get('ip') is not None and g.get('ip') > 0)
-        games_batted = sum(1 for g in game_logs if g.get('at_bats') is not None and g.get('at_bats') > 0)
-
-        is_pitcher = games_pitched > games_batted
-
-        if is_pitcher:
-            total_ip = sum(g.get('ip', 0) or 0 for g in game_logs)
-            wins = sum(1 for g in game_logs if g.get('win'))
-            losses = sum(1 for g in game_logs if g.get('loss'))
-            saves = sum(g.get('sv', 0) or 0 for g in game_logs)
-            earned_runs = sum(g.get('er', 0) or 0 for g in game_logs)
-            strikeouts = sum(g.get('p_k', 0) or 0 for g in game_logs)
-            era = (earned_runs * 9) / total_ip if total_ip > 0 else 0
-            return {"wins": wins, "losses": losses, "era": era, "sv": saves, "p_k": strikeouts, "ip": total_ip}, True
-        else:
-            at_bats = sum(g.get('at_bats', 0) or 0 for g in game_logs)
-            hits = sum(g.get('hits', 0) or 0 for g in game_logs)
-            hr = sum(g.get('hr', 0) or 0 for g in game_logs)
-            rbi = sum(g.get('rbi', 0) or 0 for g in game_logs)
-            runs = sum(g.get('runs', 0) or 0 for g in game_logs)
-            sb = sum(g.get('sb', 0) or 0 for g in game_logs)
-            avg = hits / at_bats if at_bats > 0 else 0
-            return {"avg": avg, "hr": hr, "rbi": rbi, "runs": runs, "hits": hits, "sb": sb}, False
 
     @app_commands.command(name="mlbleagueleaders", description="MLB league leaders for the current season.")
     async def mlbleagueleaders(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         season = get_current_mlb_season()
 
-        # Check cache
-        if season in self._leaderboard_cache and (discord.utils.utcnow() - self._leaderboard_cache[season]['timestamp']).total_seconds() < self._LEADERBOARD_CACHE_TTL:
-            await interaction.followup.send(embed=self._leaderboard_cache[season]['embed'], ephemeral=True)
-            return
-
-        all_game_logs = await self.bot.api_client.get_all_mlb_stats_for_season(season)
-        if not all_game_logs:
-            raise StatsNotFoundException("Could not retrieve league leader data for MLB.")
-
-        # Process stats
-        player_stats = {}
-        for game in all_game_logs:
-            p_id = game['player']['id']
-            if p_id not in player_stats:
-                player_stats[p_id] = {
-                    "at_bats": 0, "hits": 0, "hr": 0, "rbi": 0, "sb": 0,
-                    "wins": 0, "losses": 0, "saves": 0, "p_k": 0, "er": 0, "ip": 0,
-                    "player_info": game['player'], "games_pitched": 0, "games_batted": 0
-                }
-
-            # Aggregate stats
-            for stat in ["at_bats", "hits", "hr", "rbi", "sb", "wins", "losses", "saves", "p_k", "er", "ip"]:
-                player_stats[p_id][stat] += game.get(stat, 0) or 0
-            if (game.get('ip') or 0) > 0: player_stats[p_id]["games_pitched"] += 1
-            if (game.get('at_bats') or 0) > 0: player_stats[p_id]["games_batted"] += 1
-
-        # Calculate final stats
-        for p in player_stats.values():
-            p["avg"] = p["hits"] / p["at_bats"] if p["at_bats"] > 0 else 0
-            p["era"] = (p["er"] * 9) / p["ip"] if p["ip"] > 0 else float('inf')
-
-        # Get leaders
-        leaders = {
-            "Batting Average": sorted([p for p in player_stats.values() if p["at_bats"] > 200], key=lambda x: x["avg"], reverse=True)[:5],
-            "Home Runs": sorted([p for p in player_stats.values() if p["games_batted"] > 20], key=lambda x: x["hr"], reverse=True)[:5],
-            "RBIs": sorted([p for p in player_stats.values() if p["games_batted"] > 20], key=lambda x: x["rbi"], reverse=True)[:5],
-            "Wins": sorted([p for p in player_stats.values() if p["games_pitched"] > 10], key=lambda x: x["wins"], reverse=True)[:5],
-            "ERA": sorted([p for p in player_stats.values() if p["ip"] > 50], key=lambda x: x["era"])[:5],
-            "Strikeouts": sorted([p for p in player_stats.values() if p["games_pitched"] > 10], key=lambda x: x["p_k"], reverse=True)[:5],
-        }
-
         embed = discord.Embed(title=f"MLB League Leaders - {season} Season", color=discord.Color.dark_green())
-        for stat_name, player_list in leaders.items():
-            leader_text = []
-            for i, p_stat in enumerate(player_list):
-                name = p_stat['player_info']['full_name']
-                key = {"Batting Average": "avg", "Home Runs": "hr", "RBIs": "rbi", "Wins": "wins", "ERA": "era", "Strikeouts": "p_k"}[stat_name]
-                value = p_stat.get(key, 0)
-                val_str = f"{value:.3f}" if key == "avg" else (f"{value:.2f}" if key == "era" else f"{value}")
-                leader_text.append(f"**{i+1}.** {name} - `{val_str}`")
-            embed.add_field(name=f"🏆 {stat_name}", value="\n".join(leader_text) or "N/A", inline=True)
 
-        self._leaderboard_cache[season] = {"embed": embed, "timestamp": discord.utils.utcnow()}
+        all_stats_to_fetch = {**LEADER_HITTING_STATS, **LEADER_PITCHING_STATS}
+        tasks = [self.bot.api_client.get_mlb_league_leaders(season, stat) for stat in all_stats_to_fetch.values()]
+        results = await asyncio.gather(*tasks)
+
+        leaders_by_category = {name: [] for name in all_stats_to_fetch.keys()}
+
+        for leaders_data in results:
+            if not leaders_data or not leaders_data.get("data"): continue
+
+            # Determine which stat this result is for
+            p_stat = leaders_data["data"][0]
+            stat_key = next((key for key in p_stat if key.startswith(('batting_', 'pitching_')) and key in all_stats_to_fetch.values()), None)
+            if not stat_key: continue
+
+            stat_name = next(name for name, key in all_stats_to_fetch.items() if key == stat_key)
+
+            for p_data in leaders_data["data"][:5]:
+                name = p_data['player']['full_name']
+                value = p_data.get(stat_key)
+                val_str = f"{value:.3f}" if stat_key == "batting_avg" else (f"{value:.2f}" if stat_key == "pitching_era" else f"{value}")
+                leaders_by_category[stat_name].append(f"**{len(leaders_by_category[stat_name])+1}.** {name} - `{val_str}`")
+
+        for stat_name, leader_text_list in leaders_by_category.items():
+            embed.add_field(name=f"🏆 {stat_name}", value="\n".join(leader_text_list) or "N/A", inline=True)
+
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):

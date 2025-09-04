@@ -21,6 +21,8 @@ STAT_CHOICES = [
     app_commands.Choice(name="FT%", value="ft_pct"),
 ]
 
+LEADER_STAT_CHOICES = ["pts", "reb", "ast", "stl", "blk"]
+
 class NBACog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -47,18 +49,15 @@ class NBACog(commands.Cog):
     @app_commands.choices(games=[app_commands.Choice(name="Last 5 Games", value="5"), app_commands.Choice(name="Last 10 Games", value="10")])
     async def nbastats(self, interaction: discord.Interaction, player: str, stat: str, games: str):
         await interaction.response.defer(ephemeral=True)
-        player_id = int(player)
-        num_games = int(games)
+        player_id, num_games = int(player), int(games)
 
         season = get_current_nba_season()
         game_logs = await self.bot.api_client.get_nba_player_stats_for_season(player_id, season)
 
-        # If not enough games in current season, check previous
         if len(game_logs) < num_games:
             prev_season_logs = await self.bot.api_client.get_nba_player_stats_for_season(player_id, season - 1)
             game_logs.extend(prev_season_logs)
 
-        # Sort by date and filter for games played
         played_games = sorted([g for g in game_logs if g.get('min')], key=lambda x: x['game']['date'], reverse=True)
         recent_games = played_games[:num_games]
 
@@ -67,11 +66,7 @@ class NBACog(commands.Cog):
 
         avg_stat, stat_name, player_name = self._calculate_average_stat(recent_games, stat)
 
-        embed = discord.Embed(
-            title=f"{player_name} - {stat_name}",
-            description=f"Average over the last {len(recent_games)} games played.",
-            color=discord.Color.blue()
-        )
+        embed = discord.Embed(title=f"{player_name} - {stat_name}", description=f"Average over the last {len(recent_games)} games played.", color=discord.Color.blue())
         embed.add_field(name="Average", value=f"**{avg_stat}**")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -102,105 +97,45 @@ class NBACog(commands.Cog):
         player_id = int(player)
         season = get_current_nba_season()
 
-        game_logs = await self.bot.api_client.get_nba_player_stats_for_season(player_id, season)
-        if not game_logs:
-            raise StatsNotFoundException(f"Could not find stats for this player in the {season} season.")
+        averages_data = await self.bot.api_client.get_nba_season_averages(player_id, season)
+        if not averages_data or not averages_data.get("data"):
+            raise StatsNotFoundException(f"Could not find season stats for this player in the {season} season.")
 
-        stats = self._calculate_season_totals(game_logs)
-        player_name = f"{game_logs[0]['player']['first_name']} {game_logs[0]['player']['last_name']}"
+        data = averages_data["data"][0]
+        stats = data["stats"]
+        player_name = f"{data['player']['first_name']} {data['player']['last_name']}"
 
         embed = discord.Embed(title=f"{player_name} - {season} Season Averages", color=discord.Color.gold())
-        embed.add_field(name="PPG", value=f"{stats['pts']:.1f}", inline=True)
-        embed.add_field(name="RPG", value=f"{stats['reb']:.1f}", inline=True)
-        embed.add_field(name="APG", value=f"{stats['ast']:.1f}", inline=True)
-        embed.add_field(name="SPG", value=f"{stats['stl']:.1f}", inline=True)
-        embed.add_field(name="BPG", value=f"{stats['blk']:.1f}", inline=True)
-        embed.add_field(name="3PM", value=f"{stats['fg3m']:.1f}", inline=True)
-        embed.add_field(name="FG%", value=f"{stats['fg_pct']:.1f}%", inline=True)
-        embed.add_field(name="3P%", value=f"{stats['fg3_pct']:.1f}%", inline=True)
-        embed.add_field(name="FT%", value=f"{stats['ft_pct']:.1f}%", inline=True)
+        embed.add_field(name="PPG", value=f"{stats.get('pts', 0):.1f}", inline=True)
+        embed.add_field(name="RPG", value=f"{stats.get('reb', 0):.1f}", inline=True)
+        embed.add_field(name="APG", value=f"{stats.get('ast', 0):.1f}", inline=True)
+        embed.add_field(name="SPG", value=f"{stats.get('stl', 0):.1f}", inline=True)
+        embed.add_field(name="BPG", value=f"{stats.get('blk', 0):.1f}", inline=True)
+        embed.add_field(name="FG%", value=f"{stats.get('fg_pct', 0)*100:.1f}%", inline=True)
+
         await interaction.followup.send(embed=embed, ephemeral=True)
-
-    def _calculate_season_totals(self, game_logs: List[Dict[str, Any]]) -> Dict[str, float]:
-        games_played = len(game_logs)
-        if games_played == 0: return {}
-
-        totals = {k: sum(g.get(k, 0) for g in game_logs) for k in ["pts", "reb", "ast", "stl", "blk", "fg3m", "fgm", "fga", "fg3a", "ftm", "fta"]}
-
-        return {
-            "pts": totals["pts"] / games_played,
-            "reb": totals["reb"] / games_played,
-            "ast": totals["ast"] / games_played,
-            "stl": totals["stl"] / games_played,
-            "blk": totals["blk"] / games_played,
-            "fg3m": totals["fg3m"] / games_played,
-            "fg_pct": (totals["fgm"] / totals["fga"] * 100) if totals["fga"] > 0 else 0,
-            "fg3_pct": (totals["fg3m"] / totals["fg3a"] * 100) if totals["fg3a"] > 0 else 0,
-            "ft_pct": (totals["ftm"] / totals["fta"] * 100) if totals["fta"] > 0 else 0,
-        }
-
-    _leaderboard_cache = {}
-    _LEADERBOARD_CACHE_TTL = 21600 # 6 hours
 
     @app_commands.command(name="nbaleagueleaders", description="NBA league leaders for the current season.")
     async def nbaleagueleaders(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         season = get_current_nba_season()
 
-        # Check cache
-        if season in self._leaderboard_cache and (discord.utils.utcnow() - self._leaderboard_cache[season]['timestamp']).total_seconds() < self._LEADERBOARD_CACHE_TTL:
-            await interaction.followup.send(embed=self._leaderboard_cache[season]['embed'], ephemeral=True)
-            return
-
-        all_game_logs = await self.bot.api_client.get_all_nba_stats_for_season(season)
-        if not all_game_logs:
-            raise StatsNotFoundException("Could not retrieve league leader data.")
-
-        # Process stats
-        player_stats = {}
-        for game in all_game_logs:
-            p_id = game['player']['id']
-            if p_id not in player_stats:
-                player_stats[p_id] = {
-                    "games_played": 0, "pts": 0, "reb": 0, "ast": 0, "stl": 0, "blk": 0,
-                    "player_info": game['player']
-                }
-            player_stats[p_id]["games_played"] += 1
-            for stat in ["pts", "reb", "ast", "stl", "blk"]:
-                player_stats[p_id][stat] += game.get(stat, 0)
-
-        # Calculate averages and filter
-        min_games = 20 # Minimum games played to qualify for leaderboards
-        qualified_players = [p for p in player_stats.values() if p["games_played"] >= min_games]
-        for p in qualified_players:
-            p["ppg"] = p["pts"] / p["games_played"]
-            p["rpg"] = p["reb"] / p["games_played"]
-            p["apg"] = p["ast"] / p["games_played"]
-            p["spg"] = p["stl"] / p["games_played"]
-            p["bpg"] = p["blk"] / p["games_played"]
-
-        # Get leaders
-        leaders = {
-            "Points": sorted(qualified_players, key=lambda x: x["ppg"], reverse=True)[:5],
-            "Rebounds": sorted(qualified_players, key=lambda x: x["rpg"], reverse=True)[:5],
-            "Assists": sorted(qualified_players, key=lambda x: x["apg"], reverse=True)[:5],
-            "Steals": sorted(qualified_players, key=lambda x: x["spg"], reverse=True)[:5],
-            "Blocks": sorted(qualified_players, key=lambda x: x["bpg"], reverse=True)[:5],
-        }
-
-        # Create Embed
         embed = discord.Embed(title=f"NBA League Leaders - {season} Season", color=discord.Color.purple())
-        for stat_name, player_list in leaders.items():
-            leader_text = []
-            for i, p_stat in enumerate(player_list):
-                name = f"{p_stat['player_info']['first_name']} {p_stat['player_info']['last_name']}"
-                avg_key = stat_name.lower()[:1] + "pg"
-                value = p_stat.get(avg_key, 0)
-                leader_text.append(f"**{i+1}.** {name} - `{value:.1f}`")
-            embed.add_field(name=f"🏆 {stat_name}", value="\n".join(leader_text), inline=True)
 
-        # Cache the result
-        self._leaderboard_cache[season] = {"embed": embed, "timestamp": discord.utils.utcnow()}
+        tasks = [self.bot.api_client.get_nba_leaders(season, stat) for stat in LEADER_STAT_CHOICES]
+        results = await asyncio.gather(*tasks)
+
+        for leaders_data in results:
+            if not leaders_data or not leaders_data.get("data"): continue
+
+            stat_name = leaders_data["data"][0]["stat_type"].upper()
+            leader_text = []
+            for i, p_stat in enumerate(leaders_data["data"][:5]):
+                name = f"{p_stat['player']['first_name']} {p_stat['player']['last_name']}"
+                value = p_stat.get("value", 0)
+                leader_text.append(f"**{i+1}.** {name} - `{value:.1f}`")
+
+            embed.add_field(name=f"🏆 {stat_name}", value="\n".join(leader_text), inline=True)
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 

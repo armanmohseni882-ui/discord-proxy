@@ -47,6 +47,7 @@ class ApiClient:
 
     @alru_cache(maxsize=1024, ttl=86400)
     async def get_nba_player_stats_for_season(self, player_id: int, season: int):
+        # This method is still needed for /nbastats (last N games)
         all_stats = []
         cursor = 0
         while True:
@@ -58,56 +59,36 @@ class ApiClient:
             if not cursor: break
         return all_stats
 
-    @alru_cache(maxsize=1, ttl=43200) # Heavy cache on this expensive call
-    async def get_all_mlb_stats_for_season(self, season: int):
-        all_stats = []
-        cursor = 0
-        page_count = 0
-        while True:
-            params = {"seasons[]": [season], "per_page": 100, "cursor": cursor}
-            data = await self._request(self.MLB_BASE, "/stats", params)
-            if not data or not data.get("data"): break
-            all_stats.extend(data["data"])
-            cursor = data.get("meta", {}).get("next_cursor")
-            if not cursor: break
-            page_count += 1
-            if page_count > 200: break # Safety break for MLB (more players/games)
-        return all_stats
+    @alru_cache(maxsize=1024, ttl=43200)
+    async def get_nba_season_averages(self, player_id: int, season: int):
+        # GOAT-tier endpoint
+        params = {"season": season, "player_ids[]": [player_id]}
+        # The 'general' and 'base' types provide standard PPG, RPG, etc.
+        return await self._request(self.NBA_BASE, "/season_averages/general", {**params, "season_type": "regular", "type": "base"})
 
-    @alru_cache(maxsize=1, ttl=43200) # Heavy cache on this expensive call
-    async def get_all_nba_stats_for_season(self, season: int):
-        all_stats = []
-        cursor = 0
-        page_count = 0
-        while True:
-            params = {"seasons[]": [season], "per_page": 100, "cursor": cursor}
-            data = await self._request(self.NBA_BASE, "/stats", params)
-            if not data or not data.get("data"): break
-            all_stats.extend(data["data"])
-            cursor = data.get("meta", {}).get("next_cursor")
-            if not cursor: break
-            page_count += 1
-            if page_count > 100: break # Safety break to avoid excessive calls
-        return all_stats
+    @alru_cache(maxsize=1024, ttl=21600)
+    async def get_nba_leaders(self, season: int, stat_type: str):
+        # GOAT-tier endpoint
+        params = {"season": season, "stat_type": stat_type}
+        return await self._request(self.NBA_BASE, "/leaders", params)
 
     # --- NFL Methods ---
     @alru_cache(maxsize=1024, ttl=3600)
     async def get_nfl_players(self, search: str):
         return await self._request(self.NFL_BASE, "/players", {"search": search})
 
-    @alru_cache(maxsize=1024, ttl=3600)
+    @alru_cache(maxsize=1024, ttl=43200)
     async def get_nfl_season_stats(self, player_id: int, season: int):
         params = {"season": season, "player_ids[]": [player_id]}
         return await self._request(self.NFL_BASE, "/season_stats", params)
 
-    @alru_cache(maxsize=1024, ttl=3600)
+    @alru_cache(maxsize=1024, ttl=21600)
     async def get_nfl_league_leaders(self, season: int, stat: str):
         params = {"season": season, "sort_by": stat, "sort_order": "desc"}
         return await self._request(self.NFL_BASE, "/season_stats", params)
 
     @alru_cache(maxsize=1024, ttl=86400)
     async def get_nfl_player_stats_for_season(self, player_id: int, season: int):
-        # Note: NFL API for game-by-game stats is just /stats
         params = {"season": season, "player_ids[]": [player_id]}
         return await self._request(self.NFL_BASE, "/stats", params)
 
@@ -118,6 +99,7 @@ class ApiClient:
 
     @alru_cache(maxsize=1024, ttl=86400)
     async def get_mlb_player_stats_for_season(self, player_id: int, season: int):
+        # This method is still needed for /mlbstats (last N games)
         all_stats = []
         cursor = 0
         while True:
@@ -128,6 +110,18 @@ class ApiClient:
             cursor = data.get("meta", {}).get("next_cursor")
             if not cursor: break
         return all_stats
+
+    @alru_cache(maxsize=1024, ttl=43200)
+    async def get_mlb_season_stats(self, player_id: int, season: int):
+        # GOAT-tier endpoint
+        params = {"season": season, "player_ids[]": [player_id]}
+        return await self._request(self.MLB_BASE, "/season_stats", params)
+
+    @alru_cache(maxsize=1024, ttl=21600)
+    async def get_mlb_league_leaders(self, season: int, stat: str):
+        # GOAT-tier endpoint with sorting
+        params = {"season": season, "sort_by": stat, "sort_order": "desc"}
+        return await self._request(self.MLB_BASE, "/season_stats", params)
 
 # --- Season Helper Functions ---
 def get_current_nba_season() -> int:
