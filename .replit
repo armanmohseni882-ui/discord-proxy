@@ -1,0 +1,6 @@
+language = "python3"
+run = "python3 src/main.py"
+
+[packager]
+# Enable a faster packaging backend
+features = ["poetry", "upm"]

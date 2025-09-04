@@ -1,0 +1,22 @@
+# Environment variables
+.env
+*.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE and editor specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Dependency directories
+venv/
+.venv/
+env/
+.env/
+node_modules/
